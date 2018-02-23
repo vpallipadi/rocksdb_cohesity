@@ -174,7 +174,10 @@ Status ExternalSstFileIngestionJob::Run(
   edit_.SetColumnFamily(cfd_->GetID());
   // The levels that the files will be ingested into
 
-  std::vector<CustomIngSSTFileMetaData>::const_iterator fMetaData = custom_ingest->begin();
+  std::vector<CustomIngSSTFileMetaData>::const_iterator fMetaData;
+  if (custom_ingest)
+    fMetaData = custom_ingest->begin();
+
   for (IngestedFileInfo& f : files_to_ingest_) {
     // Skip assigning seqnum and level for custom ingestion.
     if (!custom_ingest) {
