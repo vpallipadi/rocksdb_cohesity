@@ -55,7 +55,7 @@ Status ExternalSstFileIngestionJob::Prepare(
   auto num_files = files_to_ingest_.size();
   if (num_files == 0) {
     return Status::InvalidArgument("The list of files is empty");
-  } else if (num_files > 1) {
+  } else if (num_files > 1 && !custom_ingest_) {
     // Verify that passed files dont have overlapping ranges
     autovector<const IngestedFileInfo*> sorted_files;
     for (size_t i = 0; i < num_files; i++) {
@@ -146,8 +146,7 @@ Status ExternalSstFileIngestionJob::NeedsFlush(bool* flush_needed) {
 
 // REQUIRES: we have become the only writer by entering both write_thread_ and
 // nonmem_write_thread_
-Status ExternalSstFileIngestionJob::Run(
-  const std::vector<CustomIngSSTFileMetaData> *custom_ingest) {
+Status ExternalSstFileIngestionJob::Run() {
   Status status;
 #ifndef NDEBUG
   // We should never run the job with a memtable that is overlapping
@@ -175,12 +174,12 @@ Status ExternalSstFileIngestionJob::Run(
   // The levels that the files will be ingested into
 
   std::vector<CustomIngSSTFileMetaData>::const_iterator fMetaData;
-  if (custom_ingest)
-    fMetaData = custom_ingest->begin();
+  if (custom_ingest_)
+    fMetaData = custom_ingest_->begin();
 
   for (IngestedFileInfo& f : files_to_ingest_) {
     // Skip assigning seqnum and level for custom ingestion.
-    if (!custom_ingest) {
+    if (!custom_ingest_) {
       SequenceNumber assigned_seqno = 0;
       if (ingestion_options_.ingest_behind) {
         status = CheckLevelForIngestedBehindFile(&f);

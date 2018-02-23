@@ -69,7 +69,8 @@ class ExternalSstFileIngestionJob {
       Env* env, VersionSet* versions, ColumnFamilyData* cfd,
       const ImmutableDBOptions& db_options, const EnvOptions& env_options,
       SnapshotList* db_snapshots,
-      const IngestExternalFileOptions& ingestion_options)
+      const IngestExternalFileOptions& ingestion_options,
+      const std::vector<CustomIngSSTFileMetaData>* custom_ingest)
       : env_(env),
         versions_(versions),
         cfd_(cfd),
@@ -77,7 +78,8 @@ class ExternalSstFileIngestionJob {
         env_options_(env_options),
         db_snapshots_(db_snapshots),
         ingestion_options_(ingestion_options),
-        job_start_time_(env_->NowMicros()) {}
+        job_start_time_(env_->NowMicros()),
+        custom_ingest_(custom_ingest) {}
 
   // Prepare the job by copying external files into the DB.
   Status Prepare(const std::vector<std::string>& external_files_paths);
@@ -90,7 +92,7 @@ class ExternalSstFileIngestionJob {
 
   // Will execute the ingestion job and prepare edit() to be applied.
   // REQUIRES: Mutex held
-  Status Run(const std::vector<CustomIngSSTFileMetaData> *custom_ingest = nullptr);
+  Status Run();
 
   // Update column family stats.
   // REQUIRES: Mutex held
@@ -160,6 +162,7 @@ class ExternalSstFileIngestionJob {
   const IngestExternalFileOptions& ingestion_options_;
   VersionEdit edit_;
   uint64_t job_start_time_;
+  const std::vector<CustomIngSSTFileMetaData>* custom_ingest_;
 };
 
 }  // namespace rocksdb
