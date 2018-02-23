@@ -2268,7 +2268,8 @@ class ModelDB : public DB {
   virtual Status IngestExternalFile(
       ColumnFamilyHandle* /*column_family*/,
       const std::vector<std::string>& /*external_files*/,
-      const IngestExternalFileOptions& /*options*/) override {
+      const IngestExternalFileOptions& /*options*/,
+      const std::vector<CustomIngSSTFileMetaData>* /*custom_ingest*/) override {
     return Status::NotSupported("Not implemented.");
   }
 
