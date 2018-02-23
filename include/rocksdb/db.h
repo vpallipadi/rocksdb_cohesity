@@ -1001,13 +1001,13 @@ class DB {
       ColumnFamilyHandle* column_family,
       const std::vector<std::string>& external_files,
       const IngestExternalFileOptions& options,
-      const std::vector<CustomIngSSTFileMetaData> *custom_ingest =
-    nullptr) = 0;
+      const std::vector<CustomIngSSTFileMetaData>* custom_ingest = nullptr) = 0;
 
   virtual Status IngestExternalFile(
       const std::vector<std::string>& external_files,
-      const IngestExternalFileOptions& options) {
-    return IngestExternalFile(DefaultColumnFamily(), external_files, options);
+      const IngestExternalFileOptions& options,
+      const std::vector<CustomIngSSTFileMetaData>* custom_ingest = nullptr) {
+    return IngestExternalFile(DefaultColumnFamily(), external_files, options, custom_ingest);
   }
 
   virtual Status VerifyChecksum() = 0;

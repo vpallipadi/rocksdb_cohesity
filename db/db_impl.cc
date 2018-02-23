@@ -2778,9 +2778,9 @@ Status DBImpl::IngestExternalFile(
     }
   }
 
-  ExternalSstFileIngestionJob ingestion_job(env_, versions_.get(), cfd,
-                                            immutable_db_options_, env_options_,
-                                            &snapshots_, ingestion_options);
+  ExternalSstFileIngestionJob ingestion_job(
+      env_, versions_.get(), cfd, immutable_db_options_, env_options_,
+      &snapshots_, ingestion_options, custom_ingest);
 
   std::list<uint64_t>::iterator pending_output_elem;
   {
@@ -2847,7 +2847,7 @@ Status DBImpl::IngestExternalFile(
 
     // Run the ingestion job
     if (status.ok()) {
-      status = ingestion_job.Run(custom_ingest);
+      status = ingestion_job.Run();
     }
 
     // Install job edit [Mutex will be unlocked here]

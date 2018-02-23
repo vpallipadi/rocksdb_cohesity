@@ -447,6 +447,7 @@ TESTS = \
 	plain_table_db_test \
 	comparator_db_test \
 	external_sst_file_test \
+	external_sst_files_ingest_test \
 	prefix_test \
 	skiplist_test \
 	write_buffer_manager_test \
@@ -1177,6 +1178,9 @@ external_sst_file_basic_test: db/external_sst_file_basic_test.o db/db_test_util.
 	$(AM_LINK)
 
 external_sst_file_test: db/external_sst_file_test.o db/db_test_util.o $(LIBOBJECTS) $(TESTHARNESS)
+	$(AM_LINK)
+
+external_sst_files_ingest_test: db/external_sst_files_ingest_test.o db/db_test_util.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(AM_LINK)
 
 db_tailing_iter_test: db/db_tailing_iter_test.o db/db_test_util.o $(LIBOBJECTS) $(TESTHARNESS)

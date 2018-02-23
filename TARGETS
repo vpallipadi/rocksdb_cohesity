@@ -685,6 +685,11 @@ ROCKS_TESTS = [
         "parallel",
     ],
     [
+        "external_sst_files_ingest_test",
+        "db/external_sst_files_ingest_test.cc",
+        "parallel",
+    ],
+    [
         "fault_injection_test",
         "db/fault_injection_test.cc",
         "parallel",

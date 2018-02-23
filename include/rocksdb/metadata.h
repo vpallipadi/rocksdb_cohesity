@@ -108,6 +108,13 @@ struct CustomIngSSTFileMetaData {
   int level;
   SequenceNumber smallest_seqnum;
   SequenceNumber largest_seqnum;
+  CustomIngSSTFileMetaData(std::string _name, int _level,
+                           SequenceNumber _smallest_seqnum,
+                           SequenceNumber _largest_seqnum)
+      : name(_name),
+        level(_level),
+        smallest_seqnum(_smallest_seqnum),
+        largest_seqnum(_largest_seqnum) {}
 };
 
 }  // namespace rocksdb
