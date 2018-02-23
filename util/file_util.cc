@@ -99,4 +99,12 @@ Status DeleteSSTFile(const ImmutableDBOptions* db_options,
 #endif
 }
 
+void PrepareExternalFilePaths(const std::vector<CustomIngSSTFileMetaData> *filesMData,
+ std::vector<std::string> *filesPath) {
+  for (auto &x : *filesMData) {
+    filesPath->push_back(x.name);
+  }
+  return;
+}
+
 }  // namespace rocksdb

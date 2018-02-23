@@ -146,12 +146,14 @@ Status ExternalSstFileIngestionJob::NeedsFlush(bool* flush_needed) {
 
 // REQUIRES: we have become the only writer by entering both write_thread_ and
 // nonmem_write_thread_
-Status ExternalSstFileIngestionJob::Run() {
+Status ExternalSstFileIngestionJob::Run(
+  const std::vector<CustomIngSSTFileMetaData> *custom_ingest) {
   Status status;
 #ifndef NDEBUG
   // We should never run the job with a memtable that is overlapping
   // with the files we are ingesting
   bool need_flush = false;
+  // TODO(sharath): No need to flush?
   status = NeedsFlush(&need_flush);
   assert(status.ok() && need_flush == false);
 #endif
@@ -159,6 +161,7 @@ Status ExternalSstFileIngestionJob::Run() {
   bool consumed_seqno = false;
   bool force_global_seqno = false;
 
+  // TODO(sharath): Custom ingestion do not hit this. (No snapshots)
   if (ingestion_options_.snapshot_consistency && !db_snapshots_->empty()) {
     // We need to assign a global sequence number to all the files even
     // if the dont overlap with any ranges since we have snapshots
@@ -171,31 +174,41 @@ Status ExternalSstFileIngestionJob::Run() {
   edit_.SetColumnFamily(cfd_->GetID());
   // The levels that the files will be ingested into
 
+  std::vector<CustomIngSSTFileMetaData>::const_iterator fMetaData = custom_ingest->begin();
   for (IngestedFileInfo& f : files_to_ingest_) {
-    SequenceNumber assigned_seqno = 0;
-    if (ingestion_options_.ingest_behind) {
-      status = CheckLevelForIngestedBehindFile(&f);
+    // Skip assigning seqnum and level for custom ingestion.
+    if (!custom_ingest) {
+      SequenceNumber assigned_seqno = 0;
+      if (ingestion_options_.ingest_behind) {
+        status = CheckLevelForIngestedBehindFile(&f);
+      } else {
+        status = AssignLevelAndSeqnoForIngestedFile(
+           super_version, force_global_seqno, cfd_->ioptions()->compaction_style,
+           &f, &assigned_seqno);
+      }
+      if (!status.ok()) {
+        return status;
+      }
+      status = AssignGlobalSeqnoForIngestedFile(&f, assigned_seqno);
+      TEST_SYNC_POINT_CALLBACK("ExternalSstFileIngestionJob::Run",
+                               &assigned_seqno);
+      if (assigned_seqno == last_seqno + 1) {
+        consumed_seqno = true;
+      }
+      if (!status.ok()) {
+        return status;
+      }
+      edit_.AddFile(f.picked_level, f.fd.GetNumber(), f.fd.GetPathId(),
+                    f.fd.GetFileSize(), f.smallest_internal_key(),
+                    f.largest_internal_key(), f.assigned_seqno, f.assigned_seqno,
+                    false);
     } else {
-      status = AssignLevelAndSeqnoForIngestedFile(
-         super_version, force_global_seqno, cfd_->ioptions()->compaction_style,
-         &f, &assigned_seqno);
+      edit_.AddFile(fMetaData->level, f.fd.GetNumber(), f.fd.GetPathId(),
+                    f.fd.GetFileSize(), f.smallest_internal_key(),
+                    f.largest_internal_key(), fMetaData->smallest_seqnum,
+                    fMetaData->largest_seqnum, false);
+      fMetaData++;
     }
-    if (!status.ok()) {
-      return status;
-    }
-    status = AssignGlobalSeqnoForIngestedFile(&f, assigned_seqno);
-    TEST_SYNC_POINT_CALLBACK("ExternalSstFileIngestionJob::Run",
-                             &assigned_seqno);
-    if (assigned_seqno == last_seqno + 1) {
-      consumed_seqno = true;
-    }
-    if (!status.ok()) {
-      return status;
-    }
-    edit_.AddFile(f.picked_level, f.fd.GetNumber(), f.fd.GetPathId(),
-                  f.fd.GetFileSize(), f.smallest_internal_key(),
-                  f.largest_internal_key(), f.assigned_seqno, f.assigned_seqno,
-                  false);
   }
 
   if (consumed_seqno) {

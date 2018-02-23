@@ -1000,7 +1000,9 @@ class DB {
   virtual Status IngestExternalFile(
       ColumnFamilyHandle* column_family,
       const std::vector<std::string>& external_files,
-      const IngestExternalFileOptions& options) = 0;
+      const IngestExternalFileOptions& options,
+      const std::vector<CustomIngSSTFileMetaData> *custom_ingest =
+    nullptr) = 0;
 
   virtual Status IngestExternalFile(
       const std::vector<std::string>& external_files,

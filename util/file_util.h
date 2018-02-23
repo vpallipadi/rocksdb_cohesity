@@ -8,6 +8,7 @@
 
 #include "options/db_options.h"
 #include "rocksdb/env.h"
+#include "rocksdb/metadata.h"
 #include "rocksdb/status.h"
 #include "rocksdb/types.h"
 
@@ -24,4 +25,6 @@ extern Status CreateFile(Env* env, const std::string& destination,
 extern Status DeleteSSTFile(const ImmutableDBOptions* db_options,
                             const std::string& fname, uint32_t path_id);
 
+void PrepareExternalFilePaths(const std::vector<CustomIngSSTFileMetaData> *filesMData,
+   std::vector<std::string> *filesPath);
 }  // namespace rocksdb

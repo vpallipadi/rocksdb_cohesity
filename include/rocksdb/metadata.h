@@ -17,6 +17,7 @@ namespace rocksdb {
 struct ColumnFamilyMetaData;
 struct LevelMetaData;
 struct SstFileMetaData;
+struct CustomIngSSTFileMetaData;
 
 // The metadata that describes a column family.
 struct ColumnFamilyMetaData {
@@ -100,4 +101,13 @@ struct LiveFileMetaData : SstFileMetaData {
   std::string column_family_name;  // Name of the column family
   int level;               // Level at which this file resides.
 };
+
+// Hackathon Project Custom Ingestion
+struct CustomIngSSTFileMetaData {
+  std::string name;
+  int level;
+  SequenceNumber smallest_seqnum;
+  SequenceNumber largest_seqnum;
+};
+
 }  // namespace rocksdb

@@ -15,6 +15,7 @@
 #include "options/db_options.h"
 #include "rocksdb/db.h"
 #include "rocksdb/env.h"
+#include "rocksdb/metadata.h"
 #include "rocksdb/sst_file_writer.h"
 #include "util/autovector.h"
 
@@ -89,7 +90,7 @@ class ExternalSstFileIngestionJob {
 
   // Will execute the ingestion job and prepare edit() to be applied.
   // REQUIRES: Mutex held
-  Status Run();
+  Status Run(const std::vector<CustomIngSSTFileMetaData> *custom_ingest = nullptr);
 
   // Update column family stats.
   // REQUIRES: Mutex held

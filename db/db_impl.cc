@@ -2763,7 +2763,8 @@ Status DBImpl::GetLatestSequenceForKey(SuperVersion* sv, const Slice& key,
 Status DBImpl::IngestExternalFile(
     ColumnFamilyHandle* column_family,
     const std::vector<std::string>& external_files,
-    const IngestExternalFileOptions& ingestion_options) {
+    const IngestExternalFileOptions& ingestion_options,
+    const std::vector<CustomIngSSTFileMetaData> *custom_ingest) {
   Status status;
   auto cfh = reinterpret_cast<ColumnFamilyHandleImpl*>(column_family);
   auto cfd = cfh->cfd();
@@ -2793,7 +2794,15 @@ Status DBImpl::IngestExternalFile(
     pending_output_elem = CaptureCurrentFileNumberInPendingOutputs();
   }
 
-  status = ingestion_job.Prepare(external_files);
+  // Hackathon custom ingestion.
+  if (custom_ingest != nullptr) {
+    std::vector<std::string> extFiles;
+    PrepareExternalFilePaths(custom_ingest, &extFiles);
+    status = ingestion_job.Prepare(extFiles);
+  } else {
+    status = ingestion_job.Prepare(external_files);
+  }
+
   if (!status.ok()) {
     return status;
   }
@@ -2827,7 +2836,7 @@ Status DBImpl::IngestExternalFile(
       status = ingestion_job.NeedsFlush(&need_flush);
       TEST_SYNC_POINT_CALLBACK("DBImpl::IngestExternalFile:NeedFlush",
                                &need_flush);
-      if (status.ok() && need_flush) {
+      if (status.ok() && need_flush && !custom_ingest) {
         mutex_.Unlock();
         status = FlushMemTable(cfd, FlushOptions(),
                                FlushReason::kExternalFileIngestion,
@@ -2838,7 +2847,7 @@ Status DBImpl::IngestExternalFile(
 
     // Run the ingestion job
     if (status.ok()) {
-      status = ingestion_job.Run();
+      status = ingestion_job.Run(custom_ingest);
     }
 
     // Install job edit [Mutex will be unlocked here]

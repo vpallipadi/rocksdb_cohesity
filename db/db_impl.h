@@ -319,7 +319,9 @@ class DBImpl : public DB {
   virtual Status IngestExternalFile(
       ColumnFamilyHandle* column_family,
       const std::vector<std::string>& external_files,
-      const IngestExternalFileOptions& ingestion_options) override;
+      const IngestExternalFileOptions& ingestion_options,
+      const std::vector<CustomIngSSTFileMetaData> *custom_ingest =
+    nullptr) override;
 
   virtual Status VerifyChecksum() override;
 
