@@ -44,6 +44,19 @@ class ExternalSSTFileTest : public DBTestBase {
     return db_->IngestExternalFile(no_files, opts, custom_ingest_metadata_vec);
   }
 
+  Status DeprecatedAddFile(
+      ColumnFamilyHandle* column_family,
+      const std::vector<CustomIngSSTFileMetaData>* custom_ingest_metadata_vec,
+      bool move_files = false) {
+    IngestExternalFileOptions opts;
+    opts.move_files = move_files;
+    opts.snapshot_consistency = false;
+    opts.allow_global_seqno = false;
+    opts.allow_blocking_flush = false;
+    std::vector<std::string> no_files;
+    return db_->IngestExternalFile(column_family, no_files, opts, custom_ingest_metadata_vec);
+  }
+
   ~ExternalSSTFileTest() { test::DestroyDir(env_, sst_files_dir_); }
 
  protected:
@@ -414,6 +427,91 @@ TEST_F(ExternalSSTFileTest, Basic) {
 
     DestroyAndRecreateExternalSSTFilesDir();
   } while (ChangeOptions(kSkipPlainTable | kSkipFIFOCompaction));
+}
+
+TEST_F(ExternalSSTFileTest, FileWithCFInfo) {
+  Options options = CurrentOptions();
+  CreateAndReopenWithCF({"koko", "toto"}, options);
+
+  SstFileWriter sfw_default(EnvOptions(), options, handles_[0]);
+  SstFileWriter sfw_cf1(EnvOptions(), options, handles_[1]);
+  SstFileWriter sfw_cf2(EnvOptions(), options, handles_[2]);
+  SstFileWriter sfw_unknown(EnvOptions(), options);
+
+  // default_cf.sst
+  const std::string cf_default_sst = sst_files_dir_ + "/default_cf.sst";
+  ASSERT_OK(sfw_default.Open(cf_default_sst));
+  ASSERT_OK(sfw_default.Put("K1", "V1"));
+  ASSERT_OK(sfw_default.Put("K2", "V2"));
+  ASSERT_OK(sfw_default.Finish());
+
+  // cf1.sst
+  const std::string cf1_sst = sst_files_dir_ + "/cf1.sst";
+  ASSERT_OK(sfw_cf1.Open(cf1_sst));
+  ASSERT_OK(sfw_cf1.Put("K3", "V1"));
+  ASSERT_OK(sfw_cf1.Put("K4", "V2"));
+  ASSERT_OK(sfw_cf1.Finish());
+
+  // cf_unknown.sst
+  const std::string unknown_sst = sst_files_dir_ + "/cf_unknown.sst";
+  ASSERT_OK(sfw_unknown.Open(unknown_sst));
+  ASSERT_OK(sfw_unknown.Put("K5", "V1"));
+  ASSERT_OK(sfw_unknown.Put("K6", "V2"));
+  ASSERT_OK(sfw_unknown.Finish());
+
+  std::vector<CustomIngSSTFileMetaData> custom_ingest_metadata_vec;
+  custom_ingest_metadata_vec.push_back(
+      CustomIngSSTFileMetaData(cf1_sst, 0, 10, 19));
+
+  ASSERT_OK(DeprecatedAddFile(handles_[2], &custom_ingest_metadata_vec, false));
+  ASSERT_EQ(Get(2, "K3"), "V1");
+  ASSERT_EQ(Get(2, "K4"), "V2");
+
+  ASSERT_OK(DeprecatedAddFile(handles_[1], &custom_ingest_metadata_vec, false));
+  ASSERT_EQ(Get(1, "K3"), "V1");
+  ASSERT_EQ(Get(1, "K4"), "V2");
+
+}
+
+TEST_F(ExternalSSTFileTest, IngestExportedSSTFromAnotherCF) {
+  Options options = CurrentOptions();
+  CreateAndReopenWithCF({"koko", "toto"}, options);
+
+  for (int i = 0; i < 100; ++i) {
+    Put(1, Key(i), Key(i) + "_val");
+  }
+
+  // Overwrite to update sequence numbers.
+  for (int i = 0; i < 100; ++i) {
+    Put(1, Key(i), Key(i) + "_overwrite");
+  }
+
+  ASSERT_OK(Flush());
+  ASSERT_OK(
+      db_->CompactRange(CompactRangeOptions(), handles_[1], nullptr, nullptr));
+  db_->DisableFileDeletions();
+
+  std::vector<CustomIngSSTFileMetaData> custom_ingest_metadata_vec;
+  ColumnFamilyMetaData cf_metadata;
+  db_->GetColumnFamilyMetaData(handles_[1], &cf_metadata);
+  fprintf(stderr, "cf_metadata %s %lu %lu\n", cf_metadata.name.c_str(),
+          cf_metadata.file_count, cf_metadata.size);
+
+  for (const auto& level_metadata : cf_metadata.levels) {
+    for (const auto& sst_metadata : level_metadata.files) {
+      custom_ingest_metadata_vec.push_back(
+          CustomIngSSTFileMetaData(sst_metadata.db_path + sst_metadata.name,
+                                   level_metadata.level,
+                                   sst_metadata.smallest_seqno,
+                                   sst_metadata.largest_seqno));
+    }
+  }
+  ASSERT_OK(DeprecatedAddFile(handles_[2], &custom_ingest_metadata_vec, false));
+
+  db_->EnableFileDeletions();
+  for (int i = 0; i < 100; ++i) {
+    ASSERT_EQ(Get(1, Key(i)), Get(2, Key(i)));
+  }
 }
 
 #if 0
@@ -1772,67 +1870,6 @@ TEST_F(ExternalSSTFileTest, DirtyExit) {
   sst_file_writer.reset(new SstFileWriter(EnvOptions(), options));
   ASSERT_OK(sst_file_writer->Open(file_path));
   ASSERT_NOK(sst_file_writer->Finish());
-}
-
-TEST_F(ExternalSSTFileTest, FileWithCFInfo) {
-  Options options = CurrentOptions();
-  CreateAndReopenWithCF({"koko", "toto"}, options);
-
-  SstFileWriter sfw_default(EnvOptions(), options, handles_[0]);
-  SstFileWriter sfw_cf1(EnvOptions(), options, handles_[1]);
-  SstFileWriter sfw_cf2(EnvOptions(), options, handles_[2]);
-  SstFileWriter sfw_unknown(EnvOptions(), options);
-
-  // default_cf.sst
-  const std::string cf_default_sst = sst_files_dir_ + "/default_cf.sst";
-  ASSERT_OK(sfw_default.Open(cf_default_sst));
-  ASSERT_OK(sfw_default.Put("K1", "V1"));
-  ASSERT_OK(sfw_default.Put("K2", "V2"));
-  ASSERT_OK(sfw_default.Finish());
-
-  // cf1.sst
-  const std::string cf1_sst = sst_files_dir_ + "/cf1.sst";
-  ASSERT_OK(sfw_cf1.Open(cf1_sst));
-  ASSERT_OK(sfw_cf1.Put("K3", "V1"));
-  ASSERT_OK(sfw_cf1.Put("K4", "V2"));
-  ASSERT_OK(sfw_cf1.Finish());
-
-  // cf_unknown.sst
-  const std::string unknown_sst = sst_files_dir_ + "/cf_unknown.sst";
-  ASSERT_OK(sfw_unknown.Open(unknown_sst));
-  ASSERT_OK(sfw_unknown.Put("K5", "V1"));
-  ASSERT_OK(sfw_unknown.Put("K6", "V2"));
-  ASSERT_OK(sfw_unknown.Finish());
-
-  IngestExternalFileOptions ifo;
-
-  // SST CF dont match
-  ASSERT_NOK(db_->IngestExternalFile(handles_[0], {cf1_sst}, ifo));
-  // SST CF dont match
-  ASSERT_NOK(db_->IngestExternalFile(handles_[2], {cf1_sst}, ifo));
-  // SST CF match
-  ASSERT_OK(db_->IngestExternalFile(handles_[1], {cf1_sst}, ifo));
-
-  // SST CF dont match
-  ASSERT_NOK(db_->IngestExternalFile(handles_[1], {cf_default_sst}, ifo));
-  // SST CF dont match
-  ASSERT_NOK(db_->IngestExternalFile(handles_[2], {cf_default_sst}, ifo));
-  // SST CF match
-  ASSERT_OK(db_->IngestExternalFile(handles_[0], {cf_default_sst}, ifo));
-
-  // SST CF unknown
-  ASSERT_OK(db_->IngestExternalFile(handles_[1], {unknown_sst}, ifo));
-  // SST CF unknown
-  ASSERT_OK(db_->IngestExternalFile(handles_[2], {unknown_sst}, ifo));
-  // SST CF unknown
-  ASSERT_OK(db_->IngestExternalFile(handles_[0], {unknown_sst}, ifo));
-
-  // Cannot ingest a file into a dropped CF
-  ASSERT_OK(db_->DropColumnFamily(handles_[1]));
-  ASSERT_NOK(db_->IngestExternalFile(handles_[1], {unknown_sst}, ifo));
-
-  // CF was not dropped, ok to Ingest
-  ASSERT_OK(db_->IngestExternalFile(handles_[2], {unknown_sst}, ifo));
 }
 
 class TestIngestExternalFileListener : public EventListener {
