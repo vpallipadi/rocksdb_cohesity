@@ -2721,6 +2721,31 @@ Status DBImpl::IngestExternalFile(
     ColumnFamilyHandle* column_family,
     const std::vector<std::string>& external_files,
     const IngestExternalFileOptions& ingestion_options) {
+  std::vector<ImportFileMetaData> import_files_metadata;
+  ImportExternalFileOptions import_options;
+  return IngestionJobWrapper(column_family, external_files, ingestion_options,
+                             import_files_metadata, import_options);
+}
+
+Status DBImpl::ImportExternalFile(
+    ColumnFamilyHandle* column_family,
+    const std::vector<ImportFileMetaData>& import_files_metadata,
+    const ImportExternalFileOptions& import_options) {
+  std::vector<std::string> external_files;
+  IngestExternalFileOptions ingestion_options;
+  return IngestionJobWrapper(column_family, external_files, ingestion_options,
+                             import_files_metadata, import_options);
+}
+
+Status DBImpl::IngestionJobWrapper(
+    ColumnFamilyHandle* column_family,
+    const std::vector<std::string>& external_files,
+    const IngestExternalFileOptions& ingestion_options,
+    const std::vector<ImportFileMetaData>& import_files_metadata,
+    const ImportExternalFileOptions& import_options) {
+  if (external_files.size() != 0 && import_files_metadata.size() != 0) {
+    return Status::InvalidArgument("Can't ingest and import at the same time");
+  }
   Status status;
   auto cfh = reinterpret_cast<ColumnFamilyHandleImpl*>(column_family);
   auto cfd = cfh->cfd();
@@ -2734,9 +2759,9 @@ Status DBImpl::IngestExternalFile(
     }
   }
 
-  ExternalSstFileIngestionJob ingestion_job(env_, versions_.get(), cfd,
-                                            immutable_db_options_, env_options_,
-                                            &snapshots_, ingestion_options);
+  ExternalSstFileIngestionJob ingestion_job(
+      env_, versions_.get(), cfd, immutable_db_options_, env_options_,
+      &snapshots_, ingestion_options, import_files_metadata, import_options);
 
   std::list<uint64_t>::iterator pending_output_elem;
   {
@@ -2835,7 +2860,11 @@ Status DBImpl::IngestExternalFile(
   ingestion_job.Cleanup(status);
 
   if (status.ok()) {
-    NotifyOnExternalFileIngested(cfd, ingestion_job);
+    if (ingestion_job.is_import_job()) {
+      NotifyOnExternalFileImported(cfd, ingestion_job);
+    } else {
+      NotifyOnExternalFileIngested(cfd, ingestion_job);
+    }
   }
 
   return status;
@@ -2905,6 +2934,32 @@ void DBImpl::NotifyOnExternalFileIngested(
     info.table_properties = f.table_properties;
     for (auto listener : immutable_db_options_.listeners) {
       listener->OnExternalFileIngested(this, info);
+    }
+  }
+
+#endif
+}
+
+void DBImpl::NotifyOnExternalFileImported(
+    ColumnFamilyData* cfd, const ExternalSstFileIngestionJob& ingestion_job) {
+#ifndef ROCKSDB_LITE
+  if (immutable_db_options_.listeners.empty()) {
+    return;
+  }
+
+  for (unsigned int i = 0; i < ingestion_job.files_to_ingest().size(); ++i) {
+    const auto& f = ingestion_job.files_to_ingest()[i];
+    const auto& import_metadata = ingestion_job.import_files_metadata()[i];
+    ExternalFileImportedInfo info;
+    info.cf_name = cfd->GetName();
+    info.external_file_path = f.external_file_path;
+    info.internal_file_path = f.internal_file_path;
+    info.smallest_seqnum = import_metadata.smallest_seqnum;
+    info.largest_seqnum = import_metadata.largest_seqnum;
+    info.level = import_metadata.level;
+    info.table_properties = f.table_properties;
+    for (auto listener : immutable_db_options_.listeners) {
+      listener->OnExternalFileImported(this, info);
     }
   }
 

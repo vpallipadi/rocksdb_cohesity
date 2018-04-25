@@ -819,6 +819,11 @@ class DB {
   virtual Status EnableAutoCompaction(
       const std::vector<ColumnFamilyHandle*>& column_family_handles) = 0;
 
+  // Waits for any schduled compactions to complete. Intended usage is for the
+  // caller to disable_auto_compactions and then wait for scheduled compactions
+  // to finish, to ensure no file deletions can happen from that point on.
+  virtual Status WaitForScheduledCompactionCompletion() = 0;
+
   // Number of levels used for this DB.
   virtual int NumberLevels(ColumnFamilyHandle* column_family) = 0;
   virtual int NumberLevels() { return NumberLevels(DefaultColumnFamily()); }
@@ -991,6 +996,23 @@ class DB {
       const std::vector<std::string>& external_files,
       const IngestExternalFileOptions& options) {
     return IngestExternalFile(DefaultColumnFamily(), external_files, options);
+  }
+
+  // ImportExternalFile() will import external SST files into the specified
+  // _empty_ column family.
+  //
+  // (1) External SST files can be created using SstFileWriter
+  // (2) External SST files can be from a particular column family in
+  // existing DB.
+  virtual Status ImportExternalFile(
+      ColumnFamilyHandle* column_family,
+      const std::vector<ImportFileMetaData>& import_files,
+      const ImportExternalFileOptions& options) = 0;
+
+  virtual Status ImportExternalFile(
+      const std::vector<ImportFileMetaData>& import_files,
+      const ImportExternalFileOptions& options) {
+    return ImportExternalFile(DefaultColumnFamily(), import_files, options);
   }
 
   virtual Status VerifyChecksum() = 0;

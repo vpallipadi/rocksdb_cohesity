@@ -30,6 +30,12 @@ class CheckpointImpl : public Checkpoint {
   virtual Status CreateCheckpoint(const std::string& checkpoint_dir,
                                   uint64_t log_size_for_flush) override;
 
+  using Checkpoint::ExportColumnFamilyTables;
+  virtual Status ExportColumnFamilyTables(
+      ColumnFamilyHandle* column_family, ColumnFamilyMetaData* metadata,
+      const std::string& checkpoint_dir,
+      bool wait_for_compaction = true) override;
+
   // Checkpoint logic can be customized by providing callbacks for link, copy,
   // or create.
   Status CreateCustomCheckpoint(
@@ -45,6 +51,17 @@ class CheckpointImpl : public Checkpoint {
                            const std::string& contents, FileType type)>
           create_file_cb,
       uint64_t* sequence_number, uint64_t log_size_for_flush);
+
+ private:
+  Status ExportTables(
+      const DBOptions& db_options,
+      ColumnFamilyMetaData* metadata,
+      std::function<Status(const std::string& src_dirname,
+                           const std::string& fname)>
+          link_file_cb,
+      std::function<Status(const std::string& src_dirname,
+                           const std::string& fname)>
+          copy_file_cb);
 
  private:
   DB* db_;

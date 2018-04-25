@@ -15,6 +15,7 @@
 #include "options/db_options.h"
 #include "rocksdb/db.h"
 #include "rocksdb/env.h"
+#include "rocksdb/metadata.h"
 #include "rocksdb/sst_file_writer.h"
 #include "util/autovector.h"
 
@@ -68,7 +69,9 @@ class ExternalSstFileIngestionJob {
       Env* env, VersionSet* versions, ColumnFamilyData* cfd,
       const ImmutableDBOptions& db_options, const EnvOptions& env_options,
       SnapshotList* db_snapshots,
-      const IngestExternalFileOptions& ingestion_options)
+      const IngestExternalFileOptions& ingestion_options,
+      const std::vector<ImportFileMetaData>& files_metadata,
+      const ImportExternalFileOptions& import_options)
       : env_(env),
         versions_(versions),
         cfd_(cfd),
@@ -76,7 +79,12 @@ class ExternalSstFileIngestionJob {
         env_options_(env_options),
         db_snapshots_(db_snapshots),
         ingestion_options_(ingestion_options),
-        job_start_time_(env_->NowMicros()) {}
+        job_start_time_(env_->NowMicros()),
+        import_files_metadata_(files_metadata),
+        import_options_(import_options),
+        is_import_job_(files_metadata.size() != 0),
+        is_move_files_(is_import_job_ ? import_options.move_files
+                                      : ingestion_options.move_files) {}
 
   // Prepare the job by copying external files into the DB.
   Status Prepare(const std::vector<std::string>& external_files_paths);
@@ -104,11 +112,25 @@ class ExternalSstFileIngestionJob {
     return files_to_ingest_;
   }
 
+  const std::vector<ImportFileMetaData>& import_files_metadata() const {
+    return import_files_metadata_;
+  }
+
+  bool is_import_job() const { return is_import_job_; }
+
  private:
   // Open the external file and populate `file_to_ingest` with all the
   // external information we need to ingest this file.
   Status GetIngestedFileInfo(const std::string& external_file,
                              IngestedFileInfo* file_to_ingest);
+
+  // Will execute the import job and prepare edit() to be applied.
+  // REQUIRES: Mutex held
+  Status RunImport();
+
+  // Checks whether the file being imported has any overlap with existing files
+  Status CheckLevelOverlapForImportFile(SuperVersion* sv,
+                                        IngestedFileInfo* file_to_ingest);
 
   // Check if the files we are ingesting overlap with any memtable.
   // REQUIRES: Mutex held
@@ -159,6 +181,10 @@ class ExternalSstFileIngestionJob {
   const IngestExternalFileOptions& ingestion_options_;
   VersionEdit edit_;
   uint64_t job_start_time_;
+  std::vector<ImportFileMetaData> import_files_metadata_;
+  const ImportExternalFileOptions& import_options_;
+  const bool is_import_job_;
+  const bool is_move_files_;
 };
 
 }  // namespace rocksdb

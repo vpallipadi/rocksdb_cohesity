@@ -21,6 +21,7 @@
 #include "port/port.h"
 #include "rocksdb/db.h"
 #include "rocksdb/env.h"
+#include "rocksdb/metadata.h"
 #include "rocksdb/utilities/checkpoint.h"
 #include "rocksdb/utilities/transaction_db.h"
 #include "util/sync_point.h"
@@ -214,6 +215,30 @@ class CheckpointTest : public testing::Test {
     }
     return result;
   }
+
+  void CopyFile(const std::string& source, const std::string& destination,
+                uint64_t size) {
+    const EnvOptions soptions;
+    unique_ptr<SequentialFile> srcfile;
+    ASSERT_OK(env_->NewSequentialFile(source, &srcfile, soptions));
+    unique_ptr<WritableFile> destfile;
+    ASSERT_OK(env_->NewWritableFile(destination, &destfile, soptions));
+
+    if (size == 0) {
+      // default argument means copy everything
+      ASSERT_OK(env_->GetFileSize(source, &size));
+    }
+
+    char buffer[4096];
+    Slice slice;
+    while (size > 0) {
+      uint64_t one = std::min(uint64_t(sizeof(buffer)), size);
+      ASSERT_OK(srcfile->Read(one, &slice, buffer));
+      ASSERT_OK(destfile->Append(slice));
+      size -= slice.size();
+    }
+    ASSERT_OK(destfile->Close());
+  }
 };
 
 TEST_F(CheckpointTest, GetSnapshotLink) {
@@ -271,6 +296,48 @@ TEST_F(CheckpointTest, GetSnapshotLink) {
     // Restore DB name
     dbname_ = test::TmpDir(env_) + "/db_test";
   }
+}
+
+TEST_F(CheckpointTest, ExportTablesDefaultCFLink) {
+    Options options;
+    const std::string export_name = test::TmpDir(env_) + "/export";
+    ReadOptions roptions;
+    std::string result;
+    Checkpoint* checkpoint;
+    ColumnFamilyMetaData metadata;
+
+    options = CurrentOptions();
+    delete db_;
+    db_ = nullptr;
+    ASSERT_OK(DestroyDB(dbname_, options));
+    ASSERT_OK(DestroyDB(export_name, options));
+    env_->DeleteDir(export_name);
+
+    // Create a database
+    Status s;
+    options.create_if_missing = true;
+    ASSERT_OK(DB::Open(options, dbname_, &db_));
+    std::string key = std::string("foo");
+    ASSERT_OK(Put(key, "v1"));
+    // Take a snapshot
+    ASSERT_OK(Checkpoint::Create(db_, &checkpoint));
+    ASSERT_OK(checkpoint->ExportColumnFamilyTables(db_->DefaultColumnFamily(),
+                                                   &metadata, export_name));
+
+    // Verify there is one sst file in metadata and export directory.
+    ASSERT_EQ(metadata.file_count, 1);
+    std::vector<std::string> subchildren;
+    db_->GetEnv()->GetChildren(export_name, &subchildren);
+    auto iter = subchildren.begin();
+    do {
+      if (*iter == "." || *iter == "..") {
+        iter = subchildren.erase(iter);
+      } else {
+        ++iter;
+      }
+    } while (iter != subchildren.end());
+    ASSERT_EQ(subchildren.size(), 1);
+    env_->DeleteDir(export_name);
 }
 
 TEST_F(CheckpointTest, CheckpointCF) {

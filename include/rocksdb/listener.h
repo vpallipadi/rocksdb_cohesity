@@ -213,6 +213,23 @@ struct ExternalFileIngestionInfo {
   TableProperties table_properties;
 };
 
+struct ExternalFileImportedInfo {
+  // the name of the column family
+  std::string cf_name;
+  // Path of the file outside the DB
+  std::string external_file_path;
+  // Path of the file inside the DB
+  std::string internal_file_path;
+  // Smallest sequency number assigned to this file
+  SequenceNumber smallest_seqnum;
+  // Largest sequency number assigned to this file
+  SequenceNumber largest_seqnum;
+  // Level at which file is being ingested
+  int level;
+  // Table properties of the table being flushed
+  TableProperties table_properties;
+};
+
 // A call-back function to RocksDB which will be called when the compaction
 // iterator is compacting values. It is meant to be returned from
 // EventListner::GetCompactionEventListner() at the beginning of compaction
@@ -376,6 +393,15 @@ class EventListener {
   // will be blocked from finishing.
   virtual void OnExternalFileIngested(
       DB* /*db*/, const ExternalFileIngestionInfo& /*info*/) {}
+
+  // A call-back function for RocksDB which will be called after an external
+  // file is imported using ImportExternalFile.
+  //
+  // Note that the this function will run on the same thread as
+  // ImportExternalFile(), if this function is blocked, ImportExternalFile()
+  // will be blocked from finishing.
+  virtual void OnExternalFileImported(
+      DB* /*db*/, const ExternalFileImportedInfo& /*info*/) {}
 
   // A call-back function for RocksDB which will be called before setting the
   // background error status to a non-OK value. The new background error status

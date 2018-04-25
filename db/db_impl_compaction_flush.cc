@@ -1028,6 +1028,16 @@ Status DBImpl::EnableAutoCompaction(
   return s;
 }
 
+Status DBImpl::WaitForScheduledCompactionCompletion() {
+  InstrumentedMutexLock l(&mutex_);
+  while ((bg_bottom_compaction_scheduled_ || bg_compaction_scheduled_ ||
+          bg_flush_scheduled_) &&
+         bg_error_.ok()) {
+    bg_cv_.Wait();
+  }
+  return bg_error_;
+}
+
 void DBImpl::MaybeScheduleFlushOrCompaction() {
   mutex_.AssertHeld();
   if (!opened_successfully_) {

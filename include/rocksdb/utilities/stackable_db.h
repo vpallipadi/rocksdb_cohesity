@@ -105,6 +105,15 @@ class StackableDB : public DB {
     return db_->IngestExternalFile(column_family, external_files, options);
   }
 
+  using DB::ImportExternalFile;
+  virtual Status ImportExternalFile(
+      ColumnFamilyHandle* column_family,
+      const std::vector<ImportFileMetaData>& import_files_metadata,
+      const ImportExternalFileOptions& import_options) override {
+    return db_->ImportExternalFile(column_family, import_files_metadata,
+                                   import_options);
+  }
+
   virtual Status VerifyChecksum() override { return db_->VerifyChecksum(); }
 
   using DB::KeyMayExist;
@@ -233,6 +242,10 @@ class StackableDB : public DB {
   virtual Status EnableAutoCompaction(
       const std::vector<ColumnFamilyHandle*>& column_family_handles) override {
     return db_->EnableAutoCompaction(column_family_handles);
+  }
+
+  virtual Status WaitForScheduledCompactionCompletion() override {
+    return db_->WaitForScheduledCompactionCompletion();
   }
 
   using DB::NumberLevels;

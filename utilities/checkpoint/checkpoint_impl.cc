@@ -42,6 +42,13 @@ Status Checkpoint::CreateCheckpoint(const std::string& checkpoint_dir,
   return Status::NotSupported("");
 }
 
+Status Checkpoint::ExportColumnFamilyTables(ColumnFamilyHandle* column_family,
+                                            ColumnFamilyMetaData* metadata,
+                                            const std::string& checkpoint_dir,
+                                            bool wait_for_compaction) {
+  return Status::NotSupported("");
+}
+
 // Builds an openable snapshot of RocksDB
 Status CheckpointImpl::CreateCheckpoint(const std::string& checkpoint_dir,
                                         uint64_t log_size_for_flush) {
@@ -297,6 +304,146 @@ Status CheckpointImpl::CreateCustomCheckpoint(
       }
     }
   }
+
+  return s;
+}
+
+Status CheckpointImpl::ExportColumnFamilyTables(
+    ColumnFamilyHandle* column_family, ColumnFamilyMetaData* metadata,
+    const std::string& checkpoint_dir, bool wait_for_compaction) {
+  DBOptions db_options = db_->GetDBOptions();
+
+  Status s = db_->GetEnv()->FileExists(checkpoint_dir);
+  if (s.ok()) {
+    return Status::InvalidArgument("Directory exists");
+  } else if (!s.IsNotFound()) {
+    assert(s.IsIOError());
+    return s;
+  }
+
+  ROCKS_LOG_INFO(
+      db_options.info_log,
+      "Started the export process -- creating tables in directory %s",
+      checkpoint_dir.c_str());
+  std::string full_private_path = checkpoint_dir + ".tmp";
+  // create snapshot directory
+  s = db_->GetEnv()->CreateDir(full_private_path);
+  if (s.ok()) {
+    s = db_->Flush(rocksdb::FlushOptions(), column_family);
+  }
+
+  if (s.ok()) {
+    db_->DisableFileDeletions();
+    if (wait_for_compaction) {
+      db_->WaitForScheduledCompactionCompletion();
+    }
+    db_->GetColumnFamilyMetaData(column_family, metadata);
+    s = ExportTables(
+        db_options,
+        metadata,
+        [&](const std::string& src_dirname, const std::string& fname) {
+          ROCKS_LOG_INFO(db_options.info_log, "Hard Linking %s", fname.c_str());
+          return db_->GetEnv()->LinkFile(src_dirname + fname,
+                                         full_private_path + fname);
+        } /* link_file_cb */,
+        [&](const std::string& src_dirname, const std::string& fname) {
+          ROCKS_LOG_INFO(db_options.info_log, "Copying %s", fname.c_str());
+          return CopyFile(db_->GetEnv(), src_dirname + fname,
+                          full_private_path + fname, 0,
+                          db_options.use_fsync);
+        } /* copy_file_cb */);
+    // we copied all the files, enable file deletions
+    db_->EnableFileDeletions(false /* force */);
+  }
+
+  if (s.ok()) {
+    // move tmp private backup to real snapshot directory
+    s = db_->GetEnv()->RenameFile(full_private_path, checkpoint_dir);
+  }
+  if (s.ok()) {
+    unique_ptr<Directory> checkpoint_directory;
+    db_->GetEnv()->NewDirectory(checkpoint_dir, &checkpoint_directory);
+    if (checkpoint_directory != nullptr) {
+      s = checkpoint_directory->Fsync();
+    }
+  }
+
+  if (s.ok()) {
+    // here we know that we succeeded and installed the new snapshot
+    // Update dirpath in metadata to point to checkpoint_dir.
+    // TODO(venki): Metadata db_path should reflect checkpoint dir.
+    // for (const auto& level_metadata : metadata->levels) {
+      // for (const auto& file_metadata : level_metadata.files) {
+        // file_metadata.db_path = checkpoint_dir;
+      // }
+    // }
+    ROCKS_LOG_INFO(db_options.info_log, "Export DONE. All is good");
+  } else {
+    // TODO(venki): Cleanup metadata in case of failure.
+    // clean all the files we might have created
+    ROCKS_LOG_INFO(db_options.info_log, "Export failed -- %s",
+                   s.ToString().c_str());
+    // we have to delete the dir and all its children
+    std::vector<std::string> subchildren;
+    db_->GetEnv()->GetChildren(full_private_path, &subchildren);
+    for (auto& subchild : subchildren) {
+      std::string subchild_path = full_private_path + "/" + subchild;
+      Status s1 = db_->GetEnv()->DeleteFile(subchild_path);
+      ROCKS_LOG_INFO(db_options.info_log, "Delete file %s -- %s",
+                     subchild_path.c_str(), s1.ToString().c_str());
+    }
+    // finally delete the private dir
+    Status s1 = db_->GetEnv()->DeleteDir(full_private_path);
+    ROCKS_LOG_INFO(db_options.info_log, "Delete dir %s -- %s",
+                   full_private_path.c_str(), s1.ToString().c_str());
+  }
+  return s;
+}
+
+Status CheckpointImpl::ExportTables(
+    const DBOptions& db_options,
+    ColumnFamilyMetaData* metadata,
+    std::function<Status(const std::string& src_dirname,
+                         const std::string& src_fname)>
+        link_file_cb,
+    std::function<Status(const std::string& src_dirname,
+                         const std::string& src_fname)>
+        copy_file_cb) {
+  Status s;
+  bool same_fs = true;
+
+  // copy/hard link live_files
+  size_t num_files = 0;
+  for (const auto& level_metadata : metadata->levels) {
+    for (const auto& file_metadata : level_metadata.files) {
+      uint64_t number;
+      FileType type;
+      bool ok = ParseFileName(file_metadata.name, &number, &type);
+      if (!ok) {
+        s = Status::Corruption("Can't parse file name. This is very bad");
+        break;
+      }
+      // we should only get sst files here
+      assert(type == kTableFile);
+      assert(file_metadata.size > 0 && file_metadata.name[0] == '/');
+      std::string src_fname = file_metadata.name;
+      ++num_files;
+
+      // * always copy if cross-device link
+      if (same_fs) {
+        s = link_file_cb(db_->GetName(), src_fname);
+        if (s.IsNotSupported()) {
+          same_fs = false;
+          s = Status::OK();
+        }
+      }
+      if (!same_fs) {
+        s = copy_file_cb(db_->GetName(), src_fname);
+      }
+    }
+  }
+  ROCKS_LOG_INFO(db_options.info_log, "Number of table files %" ROCKSDB_PRIszt,
+                 num_files);
 
   return s;
 }

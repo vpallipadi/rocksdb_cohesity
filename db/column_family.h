@@ -343,6 +343,8 @@ class ColumnFamilyData {
 
   bool initialized() const { return initialized_.load(); }
 
+  const ColumnFamilyOptions& initial_cf_options() { return initial_cf_options_; }
+
   Env::WriteLifeTimeHint CalculateSSTWriteHint(int level);
 
  private:

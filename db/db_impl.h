@@ -193,6 +193,8 @@ class DBImpl : public DB {
   virtual Status EnableAutoCompaction(
       const std::vector<ColumnFamilyHandle*>& column_family_handles) override;
 
+  virtual Status WaitForScheduledCompactionCompletion() override;
+
   using DB::SetOptions;
   Status SetOptions(
       ColumnFamilyHandle* column_family,
@@ -322,6 +324,12 @@ class DBImpl : public DB {
       ColumnFamilyHandle* column_family,
       const std::vector<std::string>& external_files,
       const IngestExternalFileOptions& ingestion_options) override;
+
+  using DB::ImportExternalFile;
+  virtual Status ImportExternalFile(
+      ColumnFamilyHandle* column_family,
+      const std::vector<ImportFileMetaData>& import_files_metadata,
+      const ImportExternalFileOptions& import_options) override;
 
   virtual Status VerifyChecksum() override;
 
@@ -655,6 +663,8 @@ class DBImpl : public DB {
 #ifndef ROCKSDB_LITE
   void NotifyOnExternalFileIngested(
       ColumnFamilyData* cfd, const ExternalSstFileIngestionJob& ingestion_job);
+  void NotifyOnExternalFileImported(
+      ColumnFamilyData* cfd, const ExternalSstFileIngestionJob& ingestion_job);
 #endif  // !ROCKSDB_LITE
 
   void NewThreadStatusCfInfo(ColumnFamilyData* cfd) const;
@@ -850,6 +860,13 @@ class DBImpl : public DB {
   void MemTableInsertStatusCheck(const Status& memtable_insert_status);
 
 #ifndef ROCKSDB_LITE
+
+  Status IngestionJobWrapper(
+      ColumnFamilyHandle* column_family,
+      const std::vector<std::string>& external_files,
+      const IngestExternalFileOptions& ingestion_options,
+      const std::vector<ImportFileMetaData>& import_files_metadata,
+      const ImportExternalFileOptions& import_options);
 
   Status CompactFilesImpl(const CompactionOptions& compact_options,
                           ColumnFamilyData* cfd, Version* version,

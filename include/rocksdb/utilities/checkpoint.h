@@ -14,6 +14,8 @@
 namespace rocksdb {
 
 class DB;
+class ColumnFamilyHandle;
+class ColumnFamilyMetaData;
 
 class Checkpoint {
  public:
@@ -35,6 +37,11 @@ class Checkpoint {
   // Flush will always trigger if it is 2PC.
   virtual Status CreateCheckpoint(const std::string& checkpoint_dir,
                                   uint64_t log_size_for_flush = 0);
+
+  virtual Status ExportColumnFamilyTables(ColumnFamilyHandle* column_family,
+                                          ColumnFamilyMetaData* metadata,
+                                          const std::string& checkpoint_dir,
+                                          bool wait_for_compaction = true);
 
   virtual ~Checkpoint() {}
 };

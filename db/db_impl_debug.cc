@@ -123,14 +123,7 @@ Status DBImpl::TEST_WaitForCompact() {
   // TODO: a bug here. This function actually does not necessarily
   // wait for compact. It actually waits for scheduled compaction
   // OR flush to finish.
-
-  InstrumentedMutexLock l(&mutex_);
-  while ((bg_bottom_compaction_scheduled_ || bg_compaction_scheduled_ ||
-          bg_flush_scheduled_) &&
-         bg_error_.ok()) {
-    bg_cv_.Wait();
-  }
-  return bg_error_;
+  return WaitForScheduledCompactionCompletion();
 }
 
 void DBImpl::TEST_LockMutex() {

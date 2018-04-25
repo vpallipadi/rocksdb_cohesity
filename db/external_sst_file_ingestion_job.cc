@@ -33,21 +33,34 @@ Status ExternalSstFileIngestionJob::Prepare(
   Status status;
 
   // Read the information of files we are ingesting
-  for (const std::string& file_path : external_files_paths) {
-    IngestedFileInfo file_to_ingest;
-    status = GetIngestedFileInfo(file_path, &file_to_ingest);
-    if (!status.ok()) {
-      return status;
+  if (!is_import_job_) {
+    for (const std::string& file_path : external_files_paths) {
+      IngestedFileInfo file_to_ingest;
+      status = GetIngestedFileInfo(file_path, &file_to_ingest);
+      if (!status.ok()) {
+        return status;
+      }
+      files_to_ingest_.push_back(file_to_ingest);
     }
-    files_to_ingest_.push_back(file_to_ingest);
+  } else {
+    for (const auto& elem : import_files_metadata_) {
+      IngestedFileInfo file_to_ingest;
+      status = GetIngestedFileInfo(elem.name, &file_to_ingest);
+      if (!status.ok()) {
+        return status;
+      }
+      files_to_ingest_.push_back(file_to_ingest);
+    }
   }
 
-  for (const IngestedFileInfo& f : files_to_ingest_) {
-    if (f.cf_id !=
-            TablePropertiesCollectorFactory::Context::kUnknownColumnFamily &&
-        f.cf_id != cfd_->GetID()) {
-      return Status::InvalidArgument(
-          "External file column family id dont match");
+  if (!is_import_job_) {
+    for (const IngestedFileInfo& f : files_to_ingest_) {
+      if (f.cf_id !=
+              TablePropertiesCollectorFactory::Context::kUnknownColumnFamily &&
+          f.cf_id != cfd_->GetID()) {
+        return Status::InvalidArgument(
+            "External file column family id dont match");
+      }
     }
   }
 
@@ -55,7 +68,7 @@ Status ExternalSstFileIngestionJob::Prepare(
   auto num_files = files_to_ingest_.size();
   if (num_files == 0) {
     return Status::InvalidArgument("The list of files is empty");
-  } else if (num_files > 1) {
+  } else if (num_files > 1 && !is_import_job_) {
     // Verify that passed files dont have overlapping ranges
     autovector<const IngestedFileInfo*> sorted_files;
     for (size_t i = 0; i < num_files; i++) {
@@ -73,6 +86,39 @@ Status ExternalSstFileIngestionJob::Prepare(
       if (ucmp->Compare(sorted_files[i]->largest_user_key,
                         sorted_files[i + 1]->smallest_user_key) >= 0) {
         return Status::NotSupported("Files have overlapping ranges");
+      }
+    }
+  } else { /* num_files > 1 && is_import_job_ */
+    // Verify that passed files don't have overlapping ranges in any particular
+    // level.
+    int min_level = 1;  // Check for overlaps in Level 1 and above.
+    int max_level = -1;
+    for (const auto& file_metadata : import_files_metadata_) {
+      if (file_metadata.level > max_level) {
+        max_level = file_metadata.level;
+      }
+    }
+    for (int level = min_level; level <= max_level; ++level) {
+      autovector<const IngestedFileInfo*> sorted_files;
+      for (size_t i = 0; i < num_files; i++) {
+        if (import_files_metadata_[i].level == level) {
+          sorted_files.push_back(&files_to_ingest_[i]);
+        }
+      }
+
+      std::sort(sorted_files.begin(), sorted_files.end(),
+                [&ucmp](const IngestedFileInfo* info1,
+                        const IngestedFileInfo* info2) {
+                  return ucmp->Compare(info1->smallest_user_key,
+                                       info2->smallest_user_key) < 0;
+                });
+
+      for (int i = 0; i < (int)sorted_files.size() - 1; i++) {
+        if (ucmp->Compare(sorted_files[i]->largest_user_key,
+                          sorted_files[i + 1]->smallest_user_key) >= 0) {
+          ROCKS_LOG_INFO(db_options_.info_log, "Import failed - Overlap in files %s %s", sorted_files[i]->external_file_path , sorted_files[i + 1]->external_file_path);
+          return Status::NotSupported("Files have overlapping ranges");
+        }
       }
     }
   }
@@ -96,7 +142,7 @@ Status ExternalSstFileIngestionJob::Prepare(
     const std::string path_inside_db =
         TableFileName(db_options_.db_paths, f.fd.GetNumber(), f.fd.GetPathId());
 
-    if (ingestion_options_.move_files) {
+    if (is_move_files_) {
       status = env_->LinkFile(path_outside_db, path_inside_db);
       if (status.IsNotSupported()) {
         // Original file is on a different FS, use copy instead of hard linking
@@ -138,7 +184,7 @@ Status ExternalSstFileIngestionJob::NeedsFlush(bool* flush_needed) {
       IngestedFilesOverlapWithMemtables(super_version, flush_needed);
 
   if (status.ok() && *flush_needed &&
-      !ingestion_options_.allow_blocking_flush) {
+      (!ingestion_options_.allow_blocking_flush || is_import_job_)) {
     status = Status::InvalidArgument("External file requires flush");
   }
   return status;
@@ -155,6 +201,10 @@ Status ExternalSstFileIngestionJob::Run() {
   status = NeedsFlush(&need_flush);
   assert(status.ok() && need_flush == false);
 #endif
+
+  if (is_import_job_) {
+    return RunImport();
+  }
 
   bool consumed_seqno = false;
   bool force_global_seqno = false;
@@ -207,6 +257,64 @@ Status ExternalSstFileIngestionJob::Run() {
   return status;
 }
 
+Status ExternalSstFileIngestionJob::RunImport() {
+  Status status;
+
+  SuperVersion* super_version = cfd_->GetSuperVersion();
+  edit_.SetColumnFamily(cfd_->GetID());
+
+  // Check for overlap with existing files at all levels.
+  for (unsigned int i = 0; i < files_to_ingest_.size(); ++i) {
+    auto& f = files_to_ingest_[i];
+    status = CheckLevelOverlapForImportFile(super_version, &f);
+    if (!status.ok()) {
+      return status;
+    }
+  }
+
+  for (unsigned int i = 0; i < files_to_ingest_.size(); ++i) {
+    auto& f = files_to_ingest_[i];
+    auto& import_metadata = import_files_metadata_[i];
+    edit_.AddFile(import_metadata.level, f.fd.GetNumber(), f.fd.GetPathId(),
+                    f.fd.GetFileSize(), f.smallest_internal_key(),
+                    f.largest_internal_key(), import_metadata.smallest_seqnum,
+                    import_metadata.largest_seqnum, false);
+    if (import_metadata.largest_seqnum > versions_->LastSequence()) {
+      versions_->SetLastAllocatedSequence(import_metadata.largest_seqnum);
+      versions_->SetLastPublishedSequence(import_metadata.largest_seqnum);
+      versions_->SetLastSequence(import_metadata.largest_seqnum);
+    }
+  }
+
+  return status;
+}
+
+Status ExternalSstFileIngestionJob::CheckLevelOverlapForImportFile(
+    SuperVersion* sv, IngestedFileInfo* file_to_ingest) {
+  Status status;
+  auto* vstorage = cfd_->current()->storage_info();
+
+  for (int lvl = 0; lvl < cfd_->NumberLevels(); lvl++) {
+    if (lvl > 0 && lvl < vstorage->base_level()) {
+      continue;
+    }
+
+    if (vstorage->NumLevelFiles(lvl) > 0) {
+      bool overlap_with_level = false;
+      status = IngestedFileOverlapWithLevel(sv, file_to_ingest, lvl,
+        &overlap_with_level);
+      if (status.ok() && overlap_with_level) {
+        status = Status::InvalidArgument(
+            "External file overlaps with existing file");
+      }
+      if (!status.ok()) {
+        break;
+      }
+    }
+  }
+  return status;
+}
+
 void ExternalSstFileIngestionJob::UpdateStats() {
   // Update internal stats for new ingested files
   uint64_t total_keys = 0;
@@ -251,7 +359,7 @@ void ExternalSstFileIngestionJob::Cleanup(const Status& status) {
                        f.internal_file_path.c_str(), s.ToString().c_str());
       }
     }
-  } else if (status.ok() && ingestion_options_.move_files) {
+  } else if (status.ok() && is_move_files_) {
     // The files were moved and added successfully, remove original file links
     for (IngestedFileInfo& f : files_to_ingest_) {
       Status s = env_->DeleteFile(f.external_file_path);
@@ -300,40 +408,46 @@ Status ExternalSstFileIngestionJob::GetIngestedFileInfo(
   auto props = table_reader->GetTableProperties();
   const auto& uprops = props->user_collected_properties;
 
-  // Get table version
-  auto version_iter = uprops.find(ExternalSstFilePropertyNames::kVersion);
-  if (version_iter == uprops.end()) {
-    return Status::Corruption("External file version not found");
-  }
-  file_to_ingest->version = DecodeFixed32(version_iter->second.c_str());
-
-  auto seqno_iter = uprops.find(ExternalSstFilePropertyNames::kGlobalSeqno);
-  if (file_to_ingest->version == 2) {
-    // version 2 imply that we have global sequence number
-    if (seqno_iter == uprops.end()) {
-      return Status::Corruption(
-          "External file global sequence number not found");
+  if (!is_import_job_) {
+    // Get table version
+    auto version_iter = uprops.find(ExternalSstFilePropertyNames::kVersion);
+    if (version_iter == uprops.end()) {
+      return Status::Corruption("External file version not found");
     }
+    file_to_ingest->version = DecodeFixed32(version_iter->second.c_str());
 
-    // Set the global sequence number
-    file_to_ingest->original_seqno = DecodeFixed64(seqno_iter->second.c_str());
-    file_to_ingest->global_seqno_offset = props->properties_offsets.at(
-        ExternalSstFilePropertyNames::kGlobalSeqno);
+    auto seqno_iter = uprops.find(ExternalSstFilePropertyNames::kGlobalSeqno);
+    if (file_to_ingest->version == 2) {
+      // version 2 imply that we have global sequence number
+      if (seqno_iter == uprops.end()) {
+        return Status::Corruption(
+            "External file global sequence number not found");
+      }
 
-    if (file_to_ingest->global_seqno_offset == 0) {
-      return Status::Corruption("Was not able to find file global seqno field");
-    }
-  } else if (file_to_ingest->version == 1) {
-    // SST file V1 should not have global seqno field
-    assert(seqno_iter == uprops.end());
-    file_to_ingest->original_seqno = 0;
-    if (ingestion_options_.allow_blocking_flush ||
-            ingestion_options_.allow_global_seqno) {
-      return Status::InvalidArgument(
+      // Set the global sequence number
+      file_to_ingest->original_seqno =
+          DecodeFixed64(seqno_iter->second.c_str());
+      file_to_ingest->global_seqno_offset = props->properties_offsets.at(
+          ExternalSstFilePropertyNames::kGlobalSeqno);
+
+      if (file_to_ingest->global_seqno_offset == 0) {
+        return Status::Corruption(
+            "Was not able to find file global seqno field");
+      }
+    } else if (file_to_ingest->version == 1) {
+      // SST file V1 should not have global seqno field
+      assert(seqno_iter == uprops.end());
+      file_to_ingest->original_seqno = 0;
+      if (ingestion_options_.allow_blocking_flush ||
+          ingestion_options_.allow_global_seqno) {
+        return Status::InvalidArgument(
             "External SST file V1 does not support global seqno");
+      }
+    } else {
+      return Status::InvalidArgument("External file version is not supported");
     }
   } else {
-    return Status::InvalidArgument("External file version is not supported");
+    file_to_ingest->original_seqno = 0;
   }
   // Get number of entries in table
   file_to_ingest->num_entries = props->num_entries;
@@ -353,7 +467,7 @@ Status ExternalSstFileIngestionJob::GetIngestedFileInfo(
   if (!ParseInternalKey(iter->key(), &key)) {
     return Status::Corruption("external file have corrupted keys");
   }
-  if (key.sequence != 0) {
+  if (!is_import_job_ && key.sequence != 0) {
     return Status::Corruption("external file have non zero sequence number");
   }
   file_to_ingest->smallest_user_key = key.user_key.ToString();
@@ -363,7 +477,7 @@ Status ExternalSstFileIngestionJob::GetIngestedFileInfo(
   if (!ParseInternalKey(iter->key(), &key)) {
     return Status::Corruption("external file have corrupted keys");
   }
-  if (key.sequence != 0) {
+  if (!is_import_job_ && key.sequence != 0) {
     return Status::Corruption("external file have non zero sequence number");
   }
   file_to_ingest->largest_user_key = key.user_key.ToString();

@@ -2238,6 +2238,14 @@ class ModelDB : public DB {
     return Status::NotSupported("Not implemented.");
   }
 
+  using DB::ImportExternalFile;
+  virtual Status ImportExternalFile(
+      ColumnFamilyHandle* column_family,
+      const std::vector<ImportFileMetaData>& import_files_metadata,
+      const ImportExternalFileOptions& import_options) override {
+    return Status::NotSupported("Not implemented.");
+  }
+
   virtual Status VerifyChecksum() override {
     return Status::NotSupported("Not implemented.");
   }
@@ -2389,6 +2397,10 @@ class ModelDB : public DB {
     return Status::NotSupported("Not supported operation.");
   }
 
+  Status WaitForScheduledCompactionCompletion() override {
+    return Status::NotSupported("Not supported operation.");
+  }
+
   using DB::NumberLevels;
   virtual int NumberLevels(ColumnFamilyHandle* column_family) override {
     return 1;
@@ -2433,6 +2445,7 @@ class ModelDB : public DB {
   virtual Status EnableFileDeletions(bool force) override {
     return Status::OK();
   }
+
   virtual Status GetLiveFiles(std::vector<std::string>&, uint64_t* size,
                               bool flush_memtable = true) override {
     return Status::OK();
